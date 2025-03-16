@@ -19,10 +19,12 @@
 #include <hardware/hw_auth_token.h>
 
 #include <android-base/file.h>
+#include <android-base/properties.h>
 #include <android-base/strings.h>
 #include <hardware/fingerprint.h>
 #include <hardware/hardware.h>
 #include "BiometricsFingerprint.h"
+#include "UdfpsHandler.h"
 
 #include <dlfcn.h>
 #include <inttypes.h>
@@ -41,19 +43,42 @@ namespace implementation {
 static const uint16_t kVersion = HARDWARE_MODULE_API_VERSION(2, 1);
 
 using ::android::base::StartsWith;
+using ::android::base::GetBoolProperty;
 
 BiometricsFingerprint* BiometricsFingerprint::sInstance = nullptr;
 
-BiometricsFingerprint::BiometricsFingerprint() : mClientCallback(nullptr), mDevice(nullptr) {
+BiometricsFingerprint::BiometricsFingerprint()
+    : mClientCallback(nullptr),
+      mDevice(nullptr),
+      mUdfpsHandlerFactory(nullptr),
+      mUdfpsHandler(nullptr) {
     sInstance = this;  // keep track of the most recent instance
+    mIsUdfps = GetBoolProperty("ro.vendor.fingerprint.udfps", false);
     mDevice = openHal();
     if (!mDevice) {
         ALOGE("Can't open HAL module");
+    }
+
+    if (mIsUdfps) {
+        mUdfpsHandlerFactory = getUdfpsHandlerFactory();
+        if (!mUdfpsHandlerFactory) {
+            ALOGE("Can't get UdfpsHandlerFactory");
+        } else {
+            mUdfpsHandler = mUdfpsHandlerFactory->create();
+            if (!mUdfpsHandler) {
+                ALOGE("Can't create UdfpsHandler");
+            } else {
+                mUdfpsHandler->init(mDevice);
+            }
+        }
     }
 }
 
 BiometricsFingerprint::~BiometricsFingerprint() {
     ALOGV("~BiometricsFingerprint()");
+    if (mUdfpsHandler) {
+        mUdfpsHandlerFactory->destroy(mUdfpsHandler);
+    }
     if (mDevice == nullptr) {
         ALOGE("No valid device");
         return;
@@ -244,7 +269,9 @@ Return<uint64_t> BiometricsFingerprint::getAuthenticatorId() {
 }
 
 Return<RequestStatus> BiometricsFingerprint::cancel() {
-    BiometricsFingerprint::onFingerUp();
+    if (mUdfpsHandler) {
+        mUdfpsHandler->cancel();
+    }
     return ErrorFilter(mDevice->rbs_cancel());
 }
 
@@ -571,6 +598,9 @@ void BiometricsFingerprint::notify(uint32_t eventId, uint32_t value1, uint32_t v
                          .isOk()) {
                 ALOGE("failed to invoke fingerprint onAcquired callback");
             }
+            if (thisPtr->mUdfpsHandler) {
+                thisPtr->mUdfpsHandler->onAcquired(static_cast<int32_t>(FingerprintAcquiredInfo::ACQUIRED_TOO_SLOW), 0);
+            }
         } break;
         case 0x3ee:
         case 0x3ef: {
@@ -580,6 +610,9 @@ void BiometricsFingerprint::notify(uint32_t eventId, uint32_t value1, uint32_t v
                          .isOk()) {
                 ALOGE("failed to invoke fingerprint onAcquired callback");
             }
+            if (thisPtr->mUdfpsHandler) {
+                thisPtr->mUdfpsHandler->onAcquired(static_cast<int32_t>(FingerprintAcquiredInfo::ACQUIRED_VENDOR), 0);
+            }
         } break;
         case 0x3f5: {
             ALOGD("onAcquired(%d)", FingerprintAcquiredInfo::ACQUIRED_INSUFFICIENT);
@@ -587,6 +620,9 @@ void BiometricsFingerprint::notify(uint32_t eventId, uint32_t value1, uint32_t v
                          ->onAcquired(devId, FingerprintAcquiredInfo::ACQUIRED_INSUFFICIENT, 0)
                          .isOk()) {
                 ALOGE("failed to invoke fingerprint onAcquired callback");
+            }
+            if (thisPtr->mUdfpsHandler) {
+                thisPtr->mUdfpsHandler->onAcquired(static_cast<int32_t>(FingerprintAcquiredInfo::ACQUIRED_INSUFFICIENT), 0);
             }
         } break;
         case 0x3f7:
@@ -596,6 +632,9 @@ void BiometricsFingerprint::notify(uint32_t eventId, uint32_t value1, uint32_t v
                          ->onAcquired(devId, FingerprintAcquiredInfo::ACQUIRED_PARTIAL, 0)
                          .isOk()) {
                 ALOGE("failed to invoke fingerprint onAcquired callback");
+            }
+            if (thisPtr->mUdfpsHandler) {
+                thisPtr->mUdfpsHandler->onAcquired(static_cast<int32_t>(FingerprintAcquiredInfo::ACQUIRED_PARTIAL), 0);
             }
         } break;
         case 0x3f9:
@@ -607,6 +646,9 @@ void BiometricsFingerprint::notify(uint32_t eventId, uint32_t value1, uint32_t v
                          .isOk()) {
                 ALOGE("failed to invoke fingerprint onAcquired callback");
             }
+            if (thisPtr->mUdfpsHandler) {
+                thisPtr->mUdfpsHandler->onAcquired(static_cast<int32_t>(FingerprintAcquiredInfo::ACQUIRED_TOO_FAST), 0);
+            }
         } break;
         case 0x3fe: {
             ALOGD("onAcquired(%d)", FingerprintAcquiredInfo::ACQUIRED_GOOD);
@@ -614,6 +656,9 @@ void BiometricsFingerprint::notify(uint32_t eventId, uint32_t value1, uint32_t v
                          ->onAcquired(devId, FingerprintAcquiredInfo::ACQUIRED_GOOD, 0)
                          .isOk()) {
                 ALOGE("failed to invoke fingerprint onAcquired callback");
+            }
+            if (thisPtr->mUdfpsHandler) {
+                thisPtr->mUdfpsHandler->onAcquired(static_cast<int32_t>(FingerprintAcquiredInfo::ACQUIRED_GOOD), 0);
             }
         } break;
         // Enrolling
@@ -650,21 +695,25 @@ void BiometricsFingerprint::notify(uint32_t eventId, uint32_t value1, uint32_t v
             break;
         }
     }
-    // Disable FOD
-    thisPtr->onFingerUp();
 }
 
 // ::V2_3::IBiometricsFingerprint follow.
 
 Return<bool> BiometricsFingerprint::isUdfps(uint32_t) {
-    return false;
+    return mIsUdfps;
 }
 
-Return<void> BiometricsFingerprint::onFingerDown(uint32_t, uint32_t, float, float) {
+Return<void> BiometricsFingerprint::onFingerDown(uint32_t x, uint32_t y, float minor, float major) {
+    if (mUdfpsHandler)
+        mUdfpsHandler->onFingerDown(x, y, minor, major);
+
     return Void();
 }
 
 Return<void> BiometricsFingerprint::onFingerUp() {
+    if (mUdfpsHandler)
+        mUdfpsHandler->onFingerUp();
+
     return Void();
 }
 
