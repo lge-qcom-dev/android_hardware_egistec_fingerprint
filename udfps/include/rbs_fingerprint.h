@@ -26,7 +26,9 @@ typedef struct rbs_fingerprint_device {
     int (*rbs_set_on_callback_proc)(void* callback_proc);
     int (*rbs_extra_api)(uint32_t cmd, uint32_t* param, uint32_t param_size, uint32_t* param2,
                          uint32_t* param2_size);
+#ifdef _HAS_QSEE
     int (*rbs_get_challenge)(uint64_t* challenge);
     int (*rbs_post_challenge)(uint64_t* challenge);
+#endif
     char* g_custom_ini_path;
 } rbs_fingerprint_device_t;

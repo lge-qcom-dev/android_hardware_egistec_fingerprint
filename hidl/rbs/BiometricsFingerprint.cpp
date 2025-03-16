@@ -167,12 +167,17 @@ Return<uint64_t> BiometricsFingerprint::setNotify(
 }
 
 Return<uint64_t> BiometricsFingerprint::preEnroll() {
+#ifdef _HAS_QSEE
     mDevice->rbs_get_challenge(&mChallenge);
+#else
+    // seen on exynos 9610
+    mChallenge = static_cast<uint64_t>(rand()) | (static_cast<uint64_t>(rand()) << 0x20);
+#endif
     return mChallenge;
 }
 
 Return<RequestStatus> BiometricsFingerprint::enroll(const hidl_array<uint8_t, 69>& hat,
-                                                    uint32_t gid, uint32_t timeoutSec) {
+                                                    uint32_t gid, uint32_t timeoutSec __unused) {
     int rc = 0;
     const hw_auth_token_t* authToken = reinterpret_cast<const hw_auth_token_t*>(hat.data());
     uint64_t devId = reinterpret_cast<uint64_t>(mDevice);
@@ -224,12 +229,12 @@ Return<RequestStatus> BiometricsFingerprint::enroll(const hidl_array<uint8_t, 69
             } else {
                 ALOGD("Secure ID check failed, error %d", rc);
                 // Stock returns EPERM, but that isn't supported in HIDL
-                return ErrorFilter(rc);
+                return RequestStatus::SYS_EINVAL;
             }
         } else {
             ALOGE("Remove all fingerprints failed, error %d", rc);
             // Stock returns EPERM, but that isn't supported in HIDL
-            return ErrorFilter(rc);
+            return RequestStatus::SYS_EINVAL;
         }
     }
 
@@ -240,7 +245,9 @@ continue_enroll:
         seed = rand();
         pre_enroll_rc = mDevice->rbs_pre_enroll(gid, seed);
         if (pre_enroll_rc == 0) {
+#ifdef _USES_TIMEOUTSEC
             doExtraApi(timeoutSec);
+#endif
             rc = mDevice->rbs_enroll();
             if (rc == 0) return RequestStatus::SYS_OK;
             onErrorCallback(FingerprintError::ERROR_CANCELED, 0);
@@ -257,7 +264,11 @@ continue_enroll:
 }
 
 Return<RequestStatus> BiometricsFingerprint::postEnroll() {
+#ifdef _HAS_QSEE
     mDevice->rbs_post_challenge(&mChallenge);
+#else
+    mChallenge = 0;
+#endif
 
     return RequestStatus::SYS_OK;
 }
@@ -470,20 +481,30 @@ rbs_fingerprint_device_t* BiometricsFingerprint::openHal() {
     fp_device->rbs_extra_api =
             reinterpret_cast<typeof(fp_device->rbs_extra_api)>(dlsym(rbs_handle, "rbs_extra_api"));
 
+#ifdef _HAS_QSEE
     fp_device->rbs_get_challenge = reinterpret_cast<typeof(fp_device->rbs_get_challenge)>(
             dlsym(rbs_handle, "rbs_get_challenge"));
 
     fp_device->rbs_post_challenge = reinterpret_cast<typeof(fp_device->rbs_post_challenge)>(
             dlsym(rbs_handle, "rbs_post_challenge"));
-
+#endif
     fp_device->g_custom_ini_path = reinterpret_cast<typeof(fp_device->g_custom_ini_path)>(
             dlsym(rbs_handle, "g_custom_ini_path"));
 
     fp_device->rbs_set_on_callback_proc((void*)BiometricsFingerprint::notify);
 
+#ifdef _HAS_QSEE
     getSecureKey(masterkey, sizeof(masterkey));
+#endif
 
-    if ((err = fp_device->rbs_initialize(masterkey, sizeof(masterkey))) != 0) {
+    if ((err = fp_device->rbs_initialize(
+#ifdef _HAS_QSEE
+                masterkey, sizeof(masterkey)
+#else
+                0, 0
+#endif
+            )
+        ) != 0) {
         ALOGE("Can't open fingerprint, error %d", err);
         free(fp_device);
         return nullptr;
@@ -497,6 +518,8 @@ rbs_fingerprint_device_t* BiometricsFingerprint::openHal() {
 
     return fp_device;
 }
+
+#ifdef _HAS_QSEE
 
 #define ETS_KEYMASTER_CMD_GET_SECURE_KEY 0x200000205ull
 
@@ -561,6 +584,8 @@ shutdown:
     ets_keymaster_send_cmd = NULL;
     return rc;
 }
+
+#endif
 
 void BiometricsFingerprint::notify(uint32_t eventId, uint32_t value1, uint32_t value2, void* buffer,
                                    uint32_t /* buffer_size */) {

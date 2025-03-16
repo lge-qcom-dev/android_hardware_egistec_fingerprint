@@ -26,6 +26,8 @@
 #include <log/log.h>
 #include "UdfpsHandler.h"
 
+#ifdef _HAS_QSEE
+
 extern "C" struct QSEECom_handle { unsigned char* ion_sbuffer; };
 
 extern "C" struct ets_masterkey_response {
@@ -34,6 +36,8 @@ extern "C" struct ets_masterkey_response {
     uint32_t size;
     uint32_t masterkey[256];
 };
+
+#endif
 
 namespace android {
 namespace hardware {
