@@ -30,5 +30,7 @@ typedef struct rbs_fingerprint_device {
     int (*rbs_get_challenge)(uint64_t* challenge);
     int (*rbs_post_challenge)(uint64_t* challenge);
 #endif
+#ifdef _NEEDS_INI_RELOCATION
     char* g_custom_ini_path;
+#endif
 } rbs_fingerprint_device_t;

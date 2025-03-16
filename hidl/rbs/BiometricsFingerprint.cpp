@@ -488,8 +488,6 @@ rbs_fingerprint_device_t* BiometricsFingerprint::openHal() {
     fp_device->rbs_post_challenge = reinterpret_cast<typeof(fp_device->rbs_post_challenge)>(
             dlsym(rbs_handle, "rbs_post_challenge"));
 #endif
-    fp_device->g_custom_ini_path = reinterpret_cast<typeof(fp_device->g_custom_ini_path)>(
-            dlsym(rbs_handle, "g_custom_ini_path"));
 
     fp_device->rbs_set_on_callback_proc((void*)BiometricsFingerprint::notify);
 
@@ -510,11 +508,15 @@ rbs_fingerprint_device_t* BiometricsFingerprint::openHal() {
         return nullptr;
     }
 
+#ifdef _NEEDS_INI_RELOCATION
+    fp_device->g_custom_ini_path = reinterpret_cast<typeof(fp_device->g_custom_ini_path)>(
+        dlsym(rbs_handle, "g_custom_ini_path"));
     // This is needed to avoid a Treble SELinux policy violation; the
     // default path stores it in the root of /data.
     // So we relocate it to here.
     mkdir("/data/vendor/fpdata", 0700);
     snprintf(fp_device->g_custom_ini_path, 21, "/data/vendor/fpdata/");
+#endif
 
     return fp_device;
 }
